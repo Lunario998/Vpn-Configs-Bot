@@ -16,6 +16,10 @@ Timeout = 10
 def _build_xray_config(link: str) -> dict:
     if link.startswith("vless://"):
         return _parse_vless(link)
+    elif link.startswith("vmess://"):
+        return _parse_vmess(link)
+    elif link.startswith("ss://"):
+        return _parse_ss(link)
     else:
         raise ValueError(f"Неподдерживаемый протокол (позже добавлю): {link[:10]}")
 
@@ -36,25 +40,35 @@ def _parse_vless(link: str) -> dict:
     fp = params.get("fp", [""])[0]
     pbk = params.get("pbk", [""])[0]
     sid = params.get("sid", [""])[0]
+    type_ = params.get("type", ["tcp"])[0]
 
     stream = {"network": "tcp"}
-    if security == "reality":
+    if type_ == "ws":
+        path = params.get("path", ["/"])[0]
+        host = params.get("host", [""])[0]
         stream = {
-            "network": "tcp",
-            "security": "reality",
-            "realitySettings": {
-                "serverName": sni,
-                "fingerprint": fp or "chrome",
-                "publicKey": pbk,
-                "shortId": sid,
-            },
+            "network": "ws",
+            "wsSettings": {"path": path, "headers": {"Host": host}} if host else {"path": path},
         }
-    elif security == "tls":
-        stream = {
-            "network": "tcp",
-            "security": "tls",
-            "tlsSettings": {"serverName": sni} if sni else {},
-        }
+    elif type_ == "tcp":
+        stream = {"network": "tcp"}
+        if security == "reality":
+            stream = {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": sni,
+                    "fingerprint": fp or "chrome",
+                    "publicKey": pbk,
+                    "shortId": sid,
+                },
+            }
+        elif security == "tls":
+            stream = {
+                "network": "tcp",
+                "security": "tls",
+                "tlsSettings": {"serverName": sni} if sni else {},
+            }
 
     return {
         "inbounds": [{"port": 1080, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
@@ -63,6 +77,66 @@ def _parse_vless(link: str) -> dict:
                 "protocol": "vless",
                 "settings": {"vnext": [{"address": address, "port": rport, "users": [{"id": uuid, "flow": flow, "encryption": "none"}]}]},
                 "streamSettings": stream,
+            }
+        ],
+    }
+
+
+def _parse_vmess(link: str) -> dict:
+    import base64
+
+    data = link.replace("vmess://", "")
+    try:
+        decoded = json.loads(base64.b64decode(data + "==").decode())
+    except Exception:
+        raise ValueError("Не удалось декодировать ссылку")
+
+    address = decoded.get("add")
+    rport = int(decoded.get("port", 443))
+    uuid = decoded.get("id")
+    security = decoded.get("scy", "auto")
+    net = decoded.get("net", "tcp")
+    host = decoded.get("host", "")
+    path = decoded.get("path", "")
+    sni = decoded.get("sni", "")
+    tls = decoded.get("tls", "")
+
+    stream = {"network": net}
+    if net == "ws":
+        stream["wsSettings"] = {"path": path, "headers": {"Host": host}} if host else {"path": path}
+    if tls == "tls":
+        stream["security"] = "tls"
+        stream["tlsSettings"] = {"serverName": sni} if sni else {}
+
+    return {
+        "inbounds": [{"port": 1080, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
+        "outbounds": [
+            {
+                "protocol": "vmess",
+                "settings": {"vnext": [{"address": address, "port": rport, "users": [{"id": uuid, "security": security, "alterId": 0}]}]},
+                "streamSettings": stream,
+            }
+        ],
+    }
+
+
+def _parse_ss(link: str) -> dict:
+    import base64
+    from urllib.parse import urlparse
+
+    parsed = urlparse(link)
+    method_and_key = base64.b64decode(parsed.hostname + "==").decode()
+    method, password = method_and_key.split(":", 1)
+
+    address = parsed.username or parsed.hostname
+    rport = parsed.port
+
+    return {
+        "inbounds": [{"port": 1080, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
+        "outbounds": [
+            {
+                "protocol": "shadowsocks",
+                "settings": {"servers": [{"address": address, "port": rport, "method": method, "password": password}]},
             }
         ],
     }
