@@ -211,22 +211,33 @@ Max_Ping = 500
 Batch_Size = 5
 
 
-# возвращает рандомный конфиг с пингом до 500мс
-async def find_working_config(configs: list[str]) -> str | None:
+# возвращает основной и запасной конфиг с пингом до 500мс
+async def find_working_config(configs: list[str]) -> list[str]:
     good = []
 
-    for i in range(0, len(configs), Batch_Size):
-        batch = configs[i:i + Batch_Size]
+    shuffled = configs.copy()
+    random.shuffle(shuffled)
+
+    for i in range(0, len(shuffled), Batch_Size):
+        batch = shuffled[i:i + Batch_Size]
         results = await asyncio.gather(*[_test_config(link, j) for j, link in enumerate(batch)])
 
         for link, ping in zip(batch, results):
             if ping is not None and ping <= Max_Ping:
                 good.append((link, ping))
 
-        if good:
+        if len(good) >= 2:
             break
 
     if not good:
-        return None
+        return []
 
-    return random.choice(good)[0]
+    good.sort(key=lambda x: x[1])
+
+    result = [good[0][0]]
+    for link, _ in good[1:]:
+        if link != result[0]:
+            result.append(link)
+            break
+
+    return result

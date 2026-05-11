@@ -59,7 +59,11 @@ async def bypass_list(callback: CallbackQuery):
         await callback.answer()
         return
 
-    await callback.message.edit_text(f"Вот рабочий конфиг:\n\n<code>{working}</code>", parse_mode="HTML")
+    text = f"Рабочий конфиг:\n\n<code>{working[0]}</code>"
+    if len(working) >= 2:
+        text += f"\n\nЗапасной:\n\n<code>{working[1]}</code>"
+
+    await callback.message.edit_text(text, parse_mode="HTML")
     await callback.answer()
 
 
@@ -86,5 +90,9 @@ async def give_config(callback: CallbackQuery):
         await callback.answer()
         return
 
-    await callback.message.edit_text(f"Вот рабочий конфиг:\n\n<code>{working}</code>", parse_mode="HTML")
+    text = f"Рабочий конфиг:\n\n<code>{working[0]}</code>"
+    if len(working) >= 2:
+        text += f"\n\nЗапасной:\n\n<code>{working[1]}</code>"
+
+    await callback.message.edit_text(text, parse_mode="HTML")
     await callback.answer()
