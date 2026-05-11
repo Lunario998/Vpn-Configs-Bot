@@ -3,28 +3,31 @@ import json
 import logging
 import tempfile
 import os
+import random
+import time
 
 from config import Xray
 
 logger = logging.getLogger(__name__)
 
 Test_Link = "http://www.gstatic.com/generate_204"
-Timeout = 10
+Timeout = 5
+Base_Port = 10800
 
 
 # конвертирует ссылку в xray-конфиг
-def _build_xray_config(link: str) -> dict:
+def _build_xray_config(link: str, socks_port: int = 1080) -> dict:
     if link.startswith("vless://"):
-        return _parse_vless(link)
+        return _parse_vless(link, socks_port)
     elif link.startswith("vmess://"):
-        return _parse_vmess(link)
+        return _parse_vmess(link, socks_port)
     elif link.startswith("ss://"):
-        return _parse_ss(link)
+        return _parse_ss(link, socks_port)
     else:
         raise ValueError(f"Неподдерживаемый протокол (позже добавлю): {link[:10]}")
 
 
-def _parse_vless(link: str) -> dict:
+def _parse_vless(link: str, socks_port: int = 1080) -> dict:
     from urllib.parse import urlparse, parse_qs
 
     parsed = urlparse(link)
@@ -71,7 +74,7 @@ def _parse_vless(link: str) -> dict:
             }
 
     return {
-        "inbounds": [{"port": 1080, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
+        "inbounds": [{"port": socks_port, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
         "outbounds": [
             {
                 "protocol": "vless",
@@ -82,7 +85,7 @@ def _parse_vless(link: str) -> dict:
     }
 
 
-def _parse_vmess(link: str) -> dict:
+def _parse_vmess(link: str, socks_port: int = 1080) -> dict:
     import base64
 
     data = link.replace("vmess://", "")
@@ -109,7 +112,7 @@ def _parse_vmess(link: str) -> dict:
         stream["tlsSettings"] = {"serverName": sni} if sni else {}
 
     return {
-        "inbounds": [{"port": 1080, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
+        "inbounds": [{"port": socks_port, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
         "outbounds": [
             {
                 "protocol": "vmess",
@@ -120,7 +123,7 @@ def _parse_vmess(link: str) -> dict:
     }
 
 
-def _parse_ss(link: str) -> dict:
+def _parse_ss(link: str, socks_port: int = 1080) -> dict:
     import base64
     from urllib.parse import urlparse
 
@@ -132,7 +135,7 @@ def _parse_ss(link: str) -> dict:
     rport = parsed.port
 
     return {
-        "inbounds": [{"port": 1080, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
+        "inbounds": [{"port": socks_port, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
         "outbounds": [
             {
                 "protocol": "shadowsocks",
@@ -142,13 +145,15 @@ def _parse_ss(link: str) -> dict:
     }
 
 
-# проверяет конфиг запуском xray и запросом
-async def _test_config(link: str) -> bool:
+# проверяет конфиг запуском xray и запросом, возвращает пинг или None
+async def _test_config(link: str, idx: int = 0) -> int | None:
+    socks_port = Base_Port + idx
+
     try:
-        config = _build_xray_config(link)
+        config = _build_xray_config(link, socks_port)
     except Exception as e:
         logger.debug("Спарсить не вышло: %s", e)
-        return False
+        return None
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(config, f)
@@ -161,37 +166,67 @@ async def _test_config(link: str) -> bool:
             stderr=asyncio.subprocess.PIPE,
         )
 
-        await asyncio.sleep(2)
-
-        if proc.returncode is not None:
-            logger.debug("Xray упал %s", link[:30])
-            return False
+        for _ in range(10):
+            await asyncio.sleep(0.3)
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", socks_port)
+                writer.close()
+                await writer.wait_closed()
+                break
+            except (ConnectionRefusedError, OSError):
+                if proc.returncode is not None:
+                    logger.debug("Xray упал %s", link[:30])
+                    return None
+        else:
+            logger.debug("Xray не стартанул %s", link[:30])
+            return None
 
         try:
             import aiohttp
             from aiohttp_socks import ProxyConnector
 
-            connector = ProxyConnector.from_url("socks5://127.0.0.1:1080", rdns=True)
+            connector = ProxyConnector.from_url(f"socks5://127.0.0.1:{socks_port}", rdns=True)
+            start = time.monotonic()
             async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=Timeout)) as session:
                 async with session.get(Test_Link) as resp:
-                    ok = resp.status == 204
+                    if resp.status == 204:
+                        ping = int((time.monotonic() - start) * 1000)
+                    else:
+                        ping = None
         except Exception:
-            ok = False
+            ping = None
         finally:
             proc.terminate()
             await proc.wait()
 
-        return ok
+        return ping
     except Exception as e:
         logger.debug("Ошибка тестов: %s", e)
-        return False
+        return None
     finally:
         os.unlink(config_path)
 
 
-# возвращает первый рабочий конфиг
+Max_Ping = 500
+Batch_Size = 5
+
+
+# возвращает рандомный конфиг с пингом до 500мс
 async def find_working_config(configs: list[str]) -> str | None:
-    for link in configs:
-        if await _test_config(link):
-            return link
-    return None
+    good = []
+
+    for i in range(0, len(configs), Batch_Size):
+        batch = configs[i:i + Batch_Size]
+        results = await asyncio.gather(*[_test_config(link, j) for j, link in enumerate(batch)])
+
+        for link, ping in zip(batch, results):
+            if ping is not None and ping <= Max_Ping:
+                good.append((link, ping))
+
+        if good:
+            break
+
+    if not good:
+        return None
+
+    return random.choice(good)[0]
