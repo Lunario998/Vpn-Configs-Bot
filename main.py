@@ -13,9 +13,10 @@ dp = Dispatcher(storage=MemoryStorage())
 
 
 async def main():
-    from handlers import start, get_config
+    from handlers import start, get_config, callbacks
     dp.include_router(start.router)
     dp.include_router(get_config.router)
+    dp.include_router(callbacks.router)
 
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)

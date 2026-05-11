@@ -1,25 +1,17 @@
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message
-
-from utils.fetcher import fetch_configs
-from utils.validator import find_working_config
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 router = Router()
 
 
 @router.message(Command("get"))
 async def get(message: Message):
-    wait_msg = await message.answer("Ищу рабочий конфиг...")
-
-    configs = await fetch_configs()
-    if not configs:
-        await wait_msg.edit_text("Не удалось загрузить конфиги.")
-        return
-
-    working = await find_working_config(configs)
-    if not working:
-        await wait_msg.edit_text("Рабочих конфигов не найдено.")
-        return
-
-    await wait_msg.edit_text(f"Вот рабочий конфиг:\n\n<code>{working}</code>", parse_mode="HTML")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Черный список", callback_data="black")],
+        [InlineKeyboardButton(text="Белый список", callback_data="white")],
+    ])
+    await message.answer(
+        "Черный список — нужен когда работает всё кроме запрещённого: Ютуб, Дискорд, Телеграм, Тик ток.\n\n"
+        "Белый список — нужен когда ничего не работает кроме разрешённого: Вконтакте, Яндекс, Банки, ГосУслуги.\n\n"
+        "Выбери тип:", reply_markup=keyboard)
